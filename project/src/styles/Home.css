@@ -1,0 +1,47 @@
+.home {
+  min-height: calc(100vh - 80px);
+}
+
+.hero {
+  background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('https://via.placeholder.com/1920x1080/333/fff?text=PC+Parts');
+  background-size: cover;
+  background-position: center;
+  height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: white;
+}
+
+.hero-content h1 {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.hero-content p {
+  font-size: 1.2rem;
+  opacity: 0.9;
+}
+
+.description, .about {
+  padding: 4rem 0;
+  background-color: #fff;
+  color: #333;
+}
+
+.description h2, .about h2 {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+  color: #333;
+}
+
+.description p, .about p {
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: #666;
+}
+
+.about {
+  background-color: #f8f9fa;
+}
