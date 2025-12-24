@@ -3,16 +3,18 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+require('dotenv').config(); // ADD THIS LINE
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Use environment variables
 const pool = mysql.createPool({
-  host: 'localhost',
-  user: 'root',
-  password: '',
-  database: 'pcparts_login',
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'pcparts_login',
   waitForConnections: true,
   connectionLimit: 10
 });
@@ -20,8 +22,8 @@ const pool = mysql.createPool({
 const initDB = async () => {
   try {
     const conn = await pool.getConnection();
-    await conn.query(`CREATE DATABASE IF NOT EXISTS pcparts_login`);
-    await conn.query(`USE pcparts_login`);
+    await conn.query(`CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME || 'pcparts_login'}`);
+    await conn.query(`USE ${process.env.DB_NAME || 'pcparts_login'}`);
     await conn.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,7 +58,11 @@ app.post('/api/register', async (req, res) => {
     );
     conn.release();
     
-    const token = jwt.sign({ userId: result.insertId, username }, 'secret-key', { expiresIn: '7d' });
+    const token = jwt.sign(
+      { userId: result.insertId, username }, 
+      process.env.JWT_SECRET || 'secret-key', // USE ENV VARIABLE
+      { expiresIn: '7d' }
+    );
     res.json({ success: true, token, user: { id: result.insertId, username } });
   } catch (error) {
     if (error.code === 'ER_DUP_ENTRY') {
@@ -82,7 +88,11 @@ app.post('/api/login', async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) return res.status(401).json({ error: 'Invalid credentials' });
     
-    const token = jwt.sign({ userId: user.id, username: user.username }, 'secret-key', { expiresIn: '7d' });
+    const token = jwt.sign(
+      { userId: user.id, username: user.username }, 
+      process.env.JWT_SECRET || 'secret-key', // USE ENV VARIABLE
+      { expiresIn: '7d' }
+    );
     res.json({ success: true, token, user: { id: user.id, username: user.username } });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
@@ -95,22 +105,15 @@ app.get('/api/check-auth', async (req, res) => {
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.json({ isLoggedIn: false });
     
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, 'secret-key');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key'); // USE ENV VARIABLE
     res.json({ isLoggedIn: true, user: decoded });
   } catch (error) {
     res.json({ isLoggedIn: false });
   }
 });
 
-app.post('/api/logout', (req, res) => {
-  res.json({ success: true, message: 'Logged out' });
-});
-
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5000; // USE ENV VARIABLE
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on http://localhost:${PORT}`);
-  console.log(`📊 Endpoints:`);
-  console.log(`   POST /api/register - Register`);
-  console.log(`   POST /api/login - Login`);
-  console.log(`   GET  /api/check-auth - Check login`);
+  console.log(`📊 Using database: ${process.env.DB_NAME || 'pcparts_login'}`);
 });
