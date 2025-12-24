@@ -1,39 +1,32 @@
 const express = require('express');
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');  // Changed from mysql2
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-require('dotenv').config(); // ADD THIS LINE
+require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Use environment variables
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'pcparts_login',
-  waitForConnections: true,
-  connectionLimit: 10
+// PostgreSQL connection pool
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL || process.env.DB_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
+// Initialize database table
 const initDB = async () => {
   try {
-    const conn = await pool.getConnection();
-    await conn.query(`CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME || 'pcparts_login'}`);
-    await conn.query(`USE ${process.env.DB_NAME || 'pcparts_login'}`);
-    await conn.query(`
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        id SERIAL PRIMARY KEY,
         username VARCHAR(50) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    conn.release();
-    console.log('✅ Database ready');
+    console.log('✅ Database table ready');
   } catch (error) {
     console.error('❌ Database error:', error.message);
   }
@@ -42,7 +35,7 @@ const initDB = async () => {
 initDB();
 
 app.get('/', (req, res) => {
-  res.json({ message: 'PC Parts API' });
+  res.json({ message: 'PC Parts API with PostgreSQL' });
 });
 
 app.post('/api/register', async (req, res) => {
@@ -51,23 +44,27 @@ app.post('/api/register', async (req, res) => {
     if (!username || !password) return res.status(400).json({ error: 'Need username and password' });
     
     const hashedPassword = await bcrypt.hash(password, 10);
-    const conn = await pool.getConnection();
-    const [result] = await conn.query(
-      'INSERT INTO users (username, password) VALUES (?, ?)',
+    
+    // PostgreSQL query with $1, $2 parameters
+    const result = await pool.query(
+      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id',
       [username, hashedPassword]
     );
-    conn.release();
     
+    const userId = result.rows[0].id;
     const token = jwt.sign(
-      { userId: result.insertId, username }, 
-      process.env.JWT_SECRET || 'secret-key', // USE ENV VARIABLE
+      { userId, username }, 
+      process.env.JWT_SECRET || 'secret-key',
       { expiresIn: '7d' }
     );
-    res.json({ success: true, token, user: { id: result.insertId, username } });
+    
+    res.json({ success: true, token, user: { id: userId, username } });
   } catch (error) {
-    if (error.code === 'ER_DUP_ENTRY') {
+    // PostgreSQL unique violation error code
+    if (error.code === '23505') {
       res.status(400).json({ error: 'Username exists' });
     } else {
+      console.error('Registration error:', error);
       res.status(500).json({ error: 'Server error' });
     }
   }
@@ -78,10 +75,13 @@ app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Need username and password' });
     
-    const conn = await pool.getConnection();
-    const [users] = await conn.query('SELECT * FROM users WHERE username = ?', [username]);
-    conn.release();
+    // PostgreSQL query
+    const result = await pool.query(
+      'SELECT * FROM users WHERE username = $1',
+      [username]
+    );
     
+    const users = result.rows;
     if (users.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
     
     const user = users[0];
@@ -90,11 +90,13 @@ app.post('/api/login', async (req, res) => {
     
     const token = jwt.sign(
       { userId: user.id, username: user.username }, 
-      process.env.JWT_SECRET || 'secret-key', // USE ENV VARIABLE
+      process.env.JWT_SECRET || 'secret-key',
       { expiresIn: '7d' }
     );
+    
     res.json({ success: true, token, user: { id: user.id, username: user.username } });
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -105,15 +107,15 @@ app.get('/api/check-auth', async (req, res) => {
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.json({ isLoggedIn: false });
     
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key'); // USE ENV VARIABLE
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key');
     res.json({ isLoggedIn: true, user: decoded });
   } catch (error) {
     res.json({ isLoggedIn: false });
   }
 });
 
-const PORT = process.env.PORT || 5000; // USE ENV VARIABLE
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`🚀 Backend running on http://localhost:${PORT}`);
-  console.log(`📊 Using database: ${process.env.DB_NAME || 'pcparts_login'}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📊 Using PostgreSQL`);
 });
