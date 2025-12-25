@@ -3,56 +3,57 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-require('dotenv').config();
 
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*', // Allow all origins for now
+  credentials: true
+}));
 app.use(express.json());
 
-// Database connection - works with both XAMPP and Railway
+// Railway provides DATABASE_URL automatically
+const DATABASE_URL = process.env.DATABASE_URL;
+
 let pool;
 
-if (process.env.DATABASE_URL) {
-  // Parse Railway connection string
-  const url = new URL(process.env.DATABASE_URL);
-  pool = mysql.createPool({
-    host: url.hostname,
-    port: url.port || 3306,
-    user: url.username,
-    password: url.password,
-    database: url.pathname.replace('/', ''),
-    waitForConnections: true,
-    connectionLimit: 10
-  });
-  console.log('📊 Using Railway MySQL');
-} else {
-  // Use XAMPP local MySQL
-  pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'pcparts_login',
-    waitForConnections: true,
-    connectionLimit: 10
-  });
-  console.log('📊 Using XAMPP MySQL');
+// Create database connection
+async function createConnection() {
+  try {
+    if (!DATABASE_URL) {
+      throw new Error('DATABASE_URL is not defined');
+    }
+    
+    // Parse the connection string
+    const url = new URL(DATABASE_URL);
+    
+    pool = mysql.createPool({
+      host: url.hostname,
+      port: url.port || 3306,
+      user: url.username,
+      password: url.password,
+      database: url.pathname.replace('/', ''),
+      waitForConnections: true,
+      connectionLimit: 10,
+      connectTimeout: 10000, // 10 seconds timeout
+    });
+    
+    console.log('✅ Database pool created');
+    return pool;
+  } catch (error) {
+    console.error('❌ Failed to create database pool:', error.message);
+    throw error;
+  }
 }
 
 // Initialize database
-const initDB = async () => {
+async function initDB() {
   try {
-    const conn = await pool.getConnection();
-    
-    // For XAMPP: create database if not exists
-    if (!process.env.DATABASE_URL) {
-      await conn.query(`CREATE DATABASE IF NOT EXISTS ${process.env.DB_NAME || 'pcparts_login'}`);
-      await conn.query(`USE ${process.env.DB_NAME || 'pcparts_login'}`);
-    }
+    const connection = await pool.getConnection();
     
     // Create users table
-    await conn.query(`
+    await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
         username VARCHAR(50) UNIQUE NOT NULL,
@@ -61,22 +62,26 @@ const initDB = async () => {
       )
     `);
     
-    conn.release();
-    console.log('✅ Database ready');
+    connection.release();
+    console.log('✅ Database initialized');
   } catch (error) {
-    console.error('❌ Database error:', error.message);
-    console.log('💡 Tip: Make sure MySQL is running (XAMPP or Railway)');
+    console.error('❌ Database initialization error:', error.message);
   }
-};
+}
 
-initDB();
-
-// Test endpoint
+// Routes
 app.get('/', (req, res) => {
   res.json({ 
     message: 'PC Parts Shop API',
-    database: process.env.DATABASE_URL ? 'Railway' : 'XAMPP',
-    status: 'running'
+    status: 'running',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'healthy',
+    database: DATABASE_URL ? 'connected' : 'not configured'
   });
 });
 
@@ -90,18 +95,18 @@ app.post('/api/register', async (req, res) => {
     }
     
     const hashedPassword = await bcrypt.hash(password, 10);
-    const conn = await pool.getConnection();
+    const connection = await pool.getConnection();
     
-    const [result] = await conn.query(
+    const [result] = await connection.query(
       'INSERT INTO users (username, password) VALUES (?, ?)',
       [username, hashedPassword]
     );
     
-    conn.release();
+    connection.release();
     
     const token = jwt.sign(
       { userId: result.insertId, username },
-      process.env.JWT_SECRET || 'secret-key',
+      process.env.JWT_SECRET || 'railway-secret-key',
       { expiresIn: '7d' }
     );
     
@@ -113,10 +118,10 @@ app.post('/api/register', async (req, res) => {
     });
     
   } catch (error) {
+    console.error('Register error:', error.message);
     if (error.code === 'ER_DUP_ENTRY') {
       res.status(400).json({ error: 'Username already exists' });
     } else {
-      console.error('Register error:', error);
       res.status(500).json({ error: 'Registration failed' });
     }
   }
@@ -131,12 +136,12 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Username and password required' });
     }
     
-    const conn = await pool.getConnection();
-    const [users] = await conn.query(
+    const connection = await pool.getConnection();
+    const [users] = await connection.query(
       'SELECT * FROM users WHERE username = ?',
       [username]
     );
-    conn.release();
+    connection.release();
     
     if (users.length === 0) {
       return res.status(401).json({ error: 'Invalid username or password' });
@@ -151,7 +156,7 @@ app.post('/api/login', async (req, res) => {
     
     const token = jwt.sign(
       { userId: user.id, username: user.username },
-      process.env.JWT_SECRET || 'secret-key',
+      process.env.JWT_SECRET || 'railway-secret-key',
       { expiresIn: '7d' }
     );
     
@@ -163,37 +168,30 @@ app.post('/api/login', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('Login error:', error.message);
     res.status(500).json({ error: 'Login failed' });
   }
 });
 
-// Check authentication
-app.get('/api/check-auth', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.json({ isLoggedIn: false });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret-key');
-    
-    res.json({ 
-      isLoggedIn: true, 
-      user: decoded 
-    });
-    
-  } catch (error) {
-    res.json({ isLoggedIn: false });
-  }
-});
-
 // Start server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔐 JWT Secret: ${process.env.JWT_SECRET ? 'Set' : 'Using default'}`);
-});
+async function startServer() {
+  try {
+    // Create database connection
+    await createConnection();
+    
+    // Initialize database
+    await initDB();
+    
+    const PORT = process.env.PORT || 10000;
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📊 Database URL: ${DATABASE_URL ? 'Configured' : 'Not set'}`);
+      console.log(`🌐 Health check: https://your-app.railway.app/health`);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
